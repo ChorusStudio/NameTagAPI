@@ -2,6 +2,7 @@ package com.perry.nametagapi;
 
 import com.perry.nametagapi.impl.NameTagRegistry;
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -18,6 +19,9 @@ public final class NameTagAPI implements ModInitializer {
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> NameTagRegistry.clearAll());
         ServerPlayConnectionEvents.DISCONNECT.register(
                 (handler, server) -> NameTagRegistry.onDisconnect(handler.getPlayer()));
+        // 重生会换成新的 ServerPlayer 实例（新 entity id），把标签搬过去
+        ServerPlayerEvents.AFTER_RESPAWN.register(
+                (oldPlayer, newPlayer, alive) -> NameTagRegistry.carryOver(oldPlayer, newPlayer));
         NameTagCommands.register();
     }
 }

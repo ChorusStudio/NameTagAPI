@@ -13,8 +13,8 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -32,6 +32,9 @@ import java.util.function.Consumer;
 public final class NameTagHolder {
     private static final int[] EMPTY = new int[0];
 
+    /** 刷新间隔的缓存时长（tick）：期间不会重复调用用户的 updateIntervalTicks()。 */
+    private static final int INTERVAL_CACHE_TICKS = 20;
+
     private final Entity observee;
     private final ServerLevel level;
     private final List<NameTagLine> lines = new ArrayList<>();
@@ -39,6 +42,10 @@ public final class NameTagHolder {
 
     /** player uuid -> 该玩家当前可见的假实体 id（有序）。整体替换，读端无锁。 */
     private volatile Map<UUID, int[]> visible = Map.of();
+
+    /** 观察者集合变动过（或首次），需要重算每行的刷新间隔。 */
+    private boolean intervalsDirty = true;
+    private int intervalRefreshAt;
 
     public NameTagHolder(Entity observee, ServerLevel level) {
         this.observee = observee;
@@ -79,6 +86,7 @@ public final class NameTagHolder {
     void addLine(NameTag nametag) {
         NameTagLine line = new NameTagLine(nametag, new VirtualTextDisplay(this.level));
         this.lines.add(line);
+        this.intervalsDirty = true;
         NameTagRegistry.registerFakeId(line.display().id);
     }
 
@@ -96,16 +104,26 @@ public final class NameTagHolder {
         this.lines.remove(target);
         NameTagRegistry.unregisterFakeId(target.display().id);
 
+        // 攒好新快照、循环外一次性发布：setVisible 是全量 map 复制，逐个玩家调是 O(n²)
+        Map<UUID, int[]> next = new HashMap<>(this.visible);
+        boolean changed = false;
         for (ServerPlayer player : this.observers) {
             int[] current = this.visibleIds(player);
             if (!contains(current, target.display().id)) {
                 continue;
             }
-            player.connection.send(NameTagPackets.removeEntities(target.display().id));
-            this.setVisible(player, removeId(current, target.display().id));
-            target.forget(player);
+            int[] remaining = removeId(current, target.display().id);
+            // 先把乘客表修正成「不再包含这个假实体」，再删实体：客户端不会出现
+            // 「乘客数组里引用一个已删除 id」的中间态。
             player.connection.send(NameTagPackets.setPassengers(
-                    this.observee.getId(), this.passengerIds(this.visibleIds(player))));
+                    this.observee.getId(), this.passengerIds(remaining)));
+            next.put(player.getUUID(), remaining);
+            changed = true;
+            target.forget(player);
+            player.connection.send(NameTagPackets.removeEntities(target.display().id));
+        }
+        if (changed) {
+            this.visible = Collections.unmodifiableMap(next);
         }
     }
 
@@ -113,6 +131,7 @@ public final class NameTagHolder {
 
     void addObserver(ServerPlayer player) {
         this.observers.add(player);
+        this.intervalsDirty = true;
     }
 
     /** 对应 ServerEntity#removePairing（HEAD）：客户端此刻还认识被观察者，先撤掉假实体。 */
@@ -120,6 +139,7 @@ public final class NameTagHolder {
         if (!this.observers.remove(player)) {
             return;
         }
+        this.intervalsDirty = true;
         int[] ids = this.visibleIds(player);
         if (ids.length > 0) {
             player.connection.send(NameTagPackets.removeEntities(ids));
@@ -130,15 +150,29 @@ public final class NameTagHolder {
         this.setVisible(player, EMPTY);
     }
 
-    /** 补发现：处理「nametag 在配对之后才 attach」的情况。 */
-    void discoverObservers() {
-        for (ServerPlayer player : this.level.players()) {
-            if (this.observers.contains(player)) {
-                continue;
-            }
-            if (this.isTrackedBy(player)) {
-                this.observers.add(player);
-            }
+    /**
+     * 一次性补齐观察者：nametag 往往是「实体已经在被追踪之后」才挂上去的，那时
+     * addPairing 早就过去了。集合由调用方从原版自己的追踪表里取
+     * （见 {@code NameTagRegistry#trackedPlayers}），所以旁观者、广播范围百分比、
+     * 视距、区块追踪视图这些规则都不需要在这里复刻。
+     */
+    void syncObserversFrom(Collection<ServerPlayer> tracked) {
+        this.observers.addAll(tracked);
+        this.intervalsDirty = true;
+    }
+
+    /** 玩家断开连接：无条件清掉所有痕迹（不发包，连接已经没了）。 */
+    void forgetPlayer(ServerPlayer player) {
+        this.observers.remove(player);
+        this.intervalsDirty = true;
+        for (NameTagLine line : this.lines) {
+            line.forget(player);
+        }
+        UUID uuid = player.getUUID();
+        if (this.visible.containsKey(uuid)) {
+            Map<UUID, int[]> next = new HashMap<>(this.visible);
+            next.remove(uuid);
+            this.visible = Collections.unmodifiableMap(next);
         }
     }
 
@@ -153,41 +187,60 @@ public final class NameTagHolder {
 
     // ------------------------------------------------------------------ tick
 
-    public void tick(int tick, boolean discover) {
-        if (discover) {
-            this.discoverObservers();
+    public void tick(int tick) {
+        // 间隔只在「观察者集合变了」或每隔 INTERVAL_CACHE_TICKS 重算，避免每 tick
+        // 对每条行 × 每个观察者调用一次用户的 updateIntervalTicks()。
+        boolean recomputeIntervals = this.intervalsDirty || tick >= this.intervalRefreshAt;
+        if (recomputeIntervals) {
+            this.intervalsDirty = false;
+            this.intervalRefreshAt = tick + INTERVAL_CACHE_TICKS;
         }
-        this.refreshComponents(tick);
-        for (ServerPlayer player : this.observers) {
-            if (this.isValid(player)) {
-                this.sync(player);
-            }
-        }
-    }
 
-    private void refreshComponents(int tick) {
-        for (NameTagLine line : this.lines) {
-            if (line.revision() == 0) {
-                line.refresh(this.observee);
+        for (ServerPlayer player : this.observers) {
+            if (!this.isValid(player)) {
                 continue;
             }
-            int interval = this.minInterval(line);
-            if (interval > 0 && tick % interval == 0) {
-                line.refresh(this.observee);
+            // 一趟走完：可见性 / 优先级（都是用户代码）对每个观察者每 tick 只求值一次，
+            // 内容刷新与数据同步共用这份结果。分成两趟会把它们各调两遍。
+            List<RankedLine> visible = this.rankVisibleLines(player);
+
+            for (RankedLine ranked : visible) {
+                NameTagLine line = ranked.line();
+                NameTagLine.PlayerState state = line.state(player);
+                if (recomputeIntervals) {
+                    line.recomputeRefreshInterval(state, player);
+                }
+                // 看不到的行根本不在 visible 里，所以这里天然只刷新「他真的看得到」的行：
+                // 既省掉用户代码，也避免实现的副作用波及看不到这条 nametag 的玩家。
+                // 再次可见时会走 markHidden 留下的 component == null 路径重算一次。
+                if (line.isRefreshDue(state, tick)) {
+                    line.refresh(state, this.observee, player);
+                }
+            }
+
+            List<Packet<? super ClientGamePacketListener>> packets = this.buildSync(player, visible);
+            if (!packets.isEmpty()) {
+                player.connection.send(NameTagPackets.bundle(packets));
             }
         }
     }
 
-    /** 所有观察者里要求的最小刷新间隔；没人要求刷新时返回 0。 */
-    private int minInterval(NameTagLine line) {
-        int min = Integer.MAX_VALUE;
-        for (ServerPlayer player : this.observers) {
-            int interval = line.nametag().updateIntervalTicks(player);
-            if (interval > 0 && interval < min) {
-                min = interval;
+    /**
+     * 该玩家可见的行，按优先级降序（数值越大越靠近头部）。
+     * <p>
+     * {@code isVisible} / {@code priority} 都是用户代码，所以每个观察者每 tick 只求值一次，
+     * 刷新与同步共用这份结果。
+     */
+    private List<RankedLine> rankVisibleLines(ServerPlayer player) {
+        List<RankedLine> visible = new ArrayList<>(this.lines.size());
+        for (NameTagLine line : this.lines) {
+            if (this.canSee(line, player)) {
+                visible.add(new RankedLine(line, line.nametag().priority(player)));
             }
         }
-        return min == Integer.MAX_VALUE ? 0 : min;
+        // List.sort 是稳定排序，所以同优先级保持 attach 顺序（先挂的在下面）
+        visible.sort((a, b) -> Integer.compare(b.priority(), a.priority()));
+        return visible;
     }
 
     // ------------------------------------------------------------------ 同步
@@ -195,39 +248,29 @@ public final class NameTagHolder {
     /** 供 ServerEntity#sendPairingData 的 Consumer 使用：和实体自己的 spawn 包同一个 bundle。 */
     @SuppressWarnings("unchecked")
     public void sendInitial(ServerPlayer player, Consumer<Packet<ClientGamePacketListener>> out) {
-        this.observers.add(player);
-        for (Packet<? super ClientGamePacketListener> packet : this.buildSync(player)) {
+        // 走 addObserver 而不是直接 add：它会置 intervalsDirty。
+        this.addObserver(player);
+        List<RankedLine> visible = this.rankVisibleLines(player);
+        for (RankedLine ranked : visible) {
+            // 新观察者的刷新间隔立刻算出来，而不是以默认值 1 撑到下一次批量重算
+            NameTagLine line = ranked.line();
+            line.recomputeRefreshInterval(line.state(player), player);
+        }
+        for (Packet<? super ClientGamePacketListener> packet : this.buildSync(player, visible)) {
             out.accept((Packet<ClientGamePacketListener>) packet);
         }
     }
 
-    private void sync(ServerPlayer player) {
-        List<Packet<? super ClientGamePacketListener>> packets = this.buildSync(player);
-        if (!packets.isEmpty()) {
-            player.connection.send(NameTagPackets.bundle(packets));
-        }
-    }
-
-    private List<Packet<? super ClientGamePacketListener>> buildSync(ServerPlayer player) {
+    /** {@code visible} 由调用方（tick / sendInitial）算好，避免重复求值 isVisible / priority。 */
+    private List<Packet<? super ClientGamePacketListener>> buildSync(ServerPlayer player, List<RankedLine> visible) {
         UUID uuid = player.getUUID();
         int[] before = this.visible.getOrDefault(uuid, EMPTY);
 
-        // 1) 先取出这个玩家能看到的所有行
-        List<NameTagLine> visible = new ArrayList<>(this.lines.size());
-        for (NameTagLine line : this.lines) {
-            if (this.canSee(line, player)) {
-                visible.add(line);
-            }
-        }
-        // 2) 按优先级降序：数值越大越靠近头部（lift 越小）。
-        //    List.sort 是稳定排序，所以同优先级保持 attach 顺序（先挂的在下面）。
-        visible.sort(Comparator.comparingInt(
-                (NameTagLine line) -> line.nametag().priority(player)).reversed());
-
-        // 3) 自下而上累加抬升量：每条 lineHeight 决定它上面那条被顶多高
+        // 自下而上累加抬升量：每条 lineHeight 决定它上面那条被顶多高
         List<Wanted> wanted = new ArrayList<>(visible.size());
         double lift = NameTagConfig.VANILLA_NAMETAG_GAP;
-        for (NameTagLine line : visible) {
+        for (RankedLine ranked : visible) {
+            NameTagLine line = ranked.line();
             wanted.add(new Wanted(line, (float) lift, this.flagsFor(line, player), this.backgroundFor(line, player), line.nametag().textOpacity(player)));
             lift += Math.max(NameTagConfig.MIN_LINE_HEIGHT, line.nametag().lineHeight(player));
         }
@@ -252,20 +295,26 @@ public final class NameTagHolder {
 
         for (Wanted want : wanted) {
             NameTagLine line = want.line();
-            Component text = line.componentOrRefresh(this.observee);
-            NameTagLine.SentState state = new NameTagLine.SentState(
-                    line.revision(), want.lift(), want.flags(), want.background(), want.textOpacity);
-            if (state.equals(line.lastSent(player))) {
+            NameTagLine.PlayerState lineState = line.state(player);
+            Component text = line.componentOrRefresh(lineState, this.observee, player);
+            NameTagLine.SentState sent = new NameTagLine.SentState(
+                    line.revision(lineState), want.lift(), want.flags(), want.background(), want.textOpacity);
+            if (sent.equals(line.lastSent(lineState))) {
                 continue;
             }
             packets.add(line.display().dataPacket(text, want.lift(), want.flags(), want.background(), want.textOpacity));
-            line.markSent(player, state);
+            line.markSent(lineState, sent);
         }
 
         if (setChanged) {
             for (int id : before) {
                 if (!contains(after, id)) {
                     packets.add(NameTagPackets.removeEntities(id));
+                    // 客户端把这个假实体删了，它那份同步数据也一起没了。必须清掉
+                    // 「已发送状态」，否则它下次再可见时 state.equals(lastSent) 仍然成立
+                    // （静态文本 revision 不变）→ 跳过 SetEntityData →
+                    // 客户端挂着一个「刚 AddEntity、还是默认空文本」的 display。
+                    this.markLineHidden(id, player);
                 }
             }
             packets.add(NameTagPackets.setPassengers(this.observee.getId(), this.passengerIds(after)));
@@ -310,17 +359,6 @@ public final class NameTagHolder {
         return VirtualTextDisplay.backgroundOrDefault(line.nametag().backgroundColor(player));
     }
 
-    private boolean isTrackedBy(ServerPlayer player) {
-        if (this.observee.level() != player.level()) {
-            return false;
-        }
-        if (!this.observee.broadcastToPlayer(player)) {
-            return false;
-        }
-        double range = Math.max(16.0D, this.observee.getType().clientTrackingRange() * 16.0D);
-        return player.distanceToSqr(this.observee) <= range * range;
-    }
-
     private boolean isValid(ServerPlayer player) {
         return !this.observee.isRemoved() && this.observee.level() == player.level();
     }
@@ -329,6 +367,23 @@ public final class NameTagHolder {
         Map<UUID, int[]> next = new HashMap<>(this.visible);
         next.put(player.getUUID(), ids);
         this.visible = Collections.unmodifiableMap(next);
+    }
+
+    /** 找出 display id 对应的行，标记它对这个玩家已隐藏（丢内容缓存 + 丢已发送状态）。 */
+    private void markLineHidden(int displayId, ServerPlayer player) {
+        for (NameTagLine line : this.lines) {
+            if (line.display().id == displayId) {
+                line.markHidden(player);
+                return;
+            }
+        }
+    }
+
+    /** 强制重发所有行的同步数据（见 NameTags#invalidate）。 */
+    void invalidateAll() {
+        for (NameTagLine line : this.lines) {
+            line.invalidate();
+        }
     }
 
     /** 被观察者要消失时调用：把所有假实体撤掉。 */
@@ -355,6 +410,10 @@ public final class NameTagHolder {
     }
 
     private record Wanted(NameTagLine line, float lift, byte flags, int background, byte textOpacity) {
+    }
+
+    /** 排序用的临时载体：把 priority 物化，避免比较器反复调用用户代码。 */
+    private record RankedLine(NameTagLine line, int priority) {
     }
 
     private static boolean contains(int[] ids, int id) {

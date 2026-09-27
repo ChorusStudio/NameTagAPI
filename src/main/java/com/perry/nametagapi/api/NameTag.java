@@ -15,15 +15,22 @@ import net.minecraft.world.entity.Entity;
  * 拿到NameTag之后，去{@link NameTags} 处附着在一个实体上即可
  */
 public interface NameTag {
-    /** 显示的内容。 */
-    Component content(Entity observee);
+    /**
+     * 显示的内容。逐观察者求值：同一条 nametag 可以给不同玩家显示不同内容，
+     * 每个观察者按自己的 {@link #updateIntervalTicks} 独立刷新，互不影响。
+     * <p>
+     * {@link #updateIntervalTicks} 为 1 时这里会<b>每 tick、对该观察者</b>调用一次，
+     * 所以实现要廉价、且不要有副作用（别改状态、打日志、发东西）。
+     * 该玩家看不到这条 nametag（{@link #isVisible} 为 false）时不会被调用。
+     */
+    Component content(Entity observee, ServerPlayer observer);
 
     /**
      * 文本不透明度，与背景颜色无关
      * <p>
      * 数值范围 0~255
      */
-    default byte textOpacity(ServerPlayer observee) {
+    default byte textOpacity(ServerPlayer observer) {
         return (byte) 255;
     }
 
@@ -38,10 +45,13 @@ public interface NameTag {
     }
 
     /**
-     * 内容刷新间隔（tick），0 或负数表示不主动刷新。
+     * <b>该观察者</b>的内容刷新间隔（tick），0 表示只给他算一次。
      * <p>
-     * 内容是所有观察者共享的，所以实际刷新频率取所有观察者的<b>最小值</b>：
-     * 只要有人要求 1 tick，就会每 tick 刷新。
+     * 逐观察者生效：A 设 1、B 设 20，两边各按自己的节奏刷新，不会互相牵连。
+     * <p>
+     * 间隔会被缓存（最短 20 tick 重算一次，观察者集合一变立刻重算），所以运行时动态改
+     * 这个返回值最多延迟 20 tick 生效。返回 0 也不会展示旧内容：一条行对该玩家
+     * 「隐藏再显示」时我们会丢掉内容缓存并重算一次。
      */
     default int updateIntervalTicks(ServerPlayer observer) {
         return 1;
@@ -69,8 +79,8 @@ public interface NameTag {
         return 0;
     }
 
-    /** 固定文本的便捷实现。 */
+    /** 固定文本的便捷实现（对所有观察者显示同一份内容）。 */
     static NameTag simple(Component text) {
-        return _ -> text;
+        return (_, _) -> text;
     }
 }

@@ -4,15 +4,14 @@
   "package": "com.perry.nametagapi.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
+    "ChunkMapAccessor",
     "DisplayAccessor",
     "PacketSendMixin",
     "ServerEntityMixin",
-    "TextDisplayAccessor"
+    "TextDisplayAccessor",
+    "TrackedEntityAccessor"
   ],
   "injectors": {
     "defaultRequire": 1
-  },
-  "overwrites": {
-    "requireAnnotations": true
   }
 }

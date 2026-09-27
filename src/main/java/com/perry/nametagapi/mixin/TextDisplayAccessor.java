@@ -14,11 +14,6 @@ public interface TextDisplayAccessor {
         throw new AssertionError();
     }
 
-    @Accessor("DATA_LINE_WIDTH_ID")
-    static EntityDataAccessor<Integer> lineWidth() {
-        throw new AssertionError();
-    }
-
     @Accessor("DATA_BACKGROUND_COLOR_ID")
     static EntityDataAccessor<Integer> backgroundColor() {
         throw new AssertionError();

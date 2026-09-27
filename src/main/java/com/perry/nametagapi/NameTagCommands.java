@@ -111,7 +111,7 @@ public final class NameTagCommands {
         }
 
         @Override
-        public Component content(Entity observee) {
+        public Component content(Entity observee, ServerPlayer observer) {
             return this.text;
         }
 
