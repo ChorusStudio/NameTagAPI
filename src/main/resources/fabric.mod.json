@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "nametagapi",
+  "version": "${version}",
+  "name": "NameTagAPI",
+  "description": "A lightweight API for custom nametags rendered as fake TextDisplay passengers.",
+  "authors": [],
+  "contact": {},
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "main": [
+      "com.perry.nametagapi.NameTagAPI"
+    ]
+  },
+  "mixins": [
+    "nametagapi.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": "~${minecraft_version}"
+  }
+}
