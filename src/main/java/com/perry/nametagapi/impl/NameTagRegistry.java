@@ -60,7 +60,7 @@ public final class NameTagRegistry {
             return;
         }
         NameTagHolder holder = HOLDERS.computeIfAbsent(
-                observee.getId(), id -> new NameTagHolder(observee, level));
+                observee.getId(), _ -> new NameTagHolder(observee, level));
         holder.addLine(nametag);
         // 标签往往挂得比「玩家开始追踪这个实体」晚，这里用原版自己的追踪表补一次。
         holder.syncObserversFrom(trackedPlayers(observee));
@@ -123,6 +123,10 @@ public final class NameTagRegistry {
     public static List<NameTag> of(Entity observee) {
         NameTagHolder holder = HOLDERS.get(observee.getId());
         return holder == null ? List.of() : holder.nametags();
+    }
+
+    public static NameTagHolder ofHolder(Entity observee) {
+        return holderFor(observee.getId());
     }
 
     // ------------------------------------------------------------------ 供 mixin 调用

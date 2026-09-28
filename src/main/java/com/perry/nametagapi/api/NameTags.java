@@ -1,5 +1,6 @@
 package com.perry.nametagapi.api;
 
+import com.perry.nametagapi.impl.NameTagHolder;
 import com.perry.nametagapi.impl.NameTagRegistry;
 import net.minecraft.world.entity.Entity;
 
@@ -45,5 +46,15 @@ public final class NameTags {
     /** 当前挂着的 nametag（快照）。 */
     public static List<NameTag> of(Entity observee) {
         return NameTagRegistry.of(observee);
+    }
+
+    /**
+     * 当前挂着的 nametag holder
+     *<p>
+     * 除非你知道你在做什么，否则请不要调用，更别修改
+     */
+    @Deprecated
+    public static NameTagHolder ofHolder(Entity observee) {
+        return NameTagRegistry.ofHolder(observee);
     }
 }
