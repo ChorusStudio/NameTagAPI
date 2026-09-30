@@ -3,6 +3,7 @@ package com.perry.nametagapi.impl;
 import com.perry.nametagapi.NameTagAPI;
 import com.perry.nametagapi.NameTagConfig;
 import com.perry.nametagapi.api.NameTag;
+import com.perry.nametagapi.api.NameTagDisplay;
 import com.perry.nametagapi.mixin.ChunkMapAccessor;
 import com.perry.nametagapi.mixin.TrackedEntityAccessor;
 import net.minecraft.network.protocol.Packet;
@@ -127,6 +128,20 @@ public final class NameTagRegistry {
 
     public static NameTagHolder ofHolder(Entity observee) {
         return holderFor(observee.getId());
+    }
+
+    /**
+     * 某个观察者当前看到的 nametag 假实体，按渲染顺序（自下而上）排列。
+     * <p>
+     * 详见 {@link NameTagHolder#displaysFor}：必须在服务端线程调用，且会实时求值
+     * isVisible / priority / lineHeight 等用户代码。
+     */
+    public static List<NameTagDisplay> displays(Entity observee, ServerPlayer observer) {
+        Objects.requireNonNull(observee, "observee");
+        Objects.requireNonNull(observer, "observer");
+        checkServerThread(observee);
+        NameTagHolder holder = HOLDERS.get(observee.getId());
+        return holder == null ? List.of() : holder.displaysFor(observer);
     }
 
     // ------------------------------------------------------------------ 供 mixin 调用

@@ -2,11 +2,17 @@ package com.perry.nametagapi.api;
 
 import com.perry.nametagapi.impl.NameTagHolder;
 import com.perry.nametagapi.impl.NameTagRegistry;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 
 import java.util.List;
 
-/** 唯一入口。所有方法都必须在服务端线程调用。 */
+/**
+ * 唯一入口。
+ * <p>
+ * <b>纯服务端 mod</b>：所有方法都必须在服务端线程调用，没有任何客户端 API —— 假实体的
+ * 渲染完全由原版客户端依据我们下发的包自己完成。
+ */
 public final class NameTags {
     private NameTags() {
     }
@@ -46,6 +52,26 @@ public final class NameTags {
     /** 当前挂着的 nametag（快照）。 */
     public static List<NameTag> of(Entity observee) {
         return NameTagRegistry.of(observee);
+    }
+
+    /**
+     * 某个观察者当前能看到的 nametag 假实体，按渲染顺序（<b>自下而上</b>）排列。
+     * <p>
+     * 被观察者身上没挂 nametag、或该玩家根本没在观察它时返回空列表。
+     * <p>
+     * <b>服务端世界里并不存在这些实体</b>：它们只是「挂在被观察者身上的乘客」，客户端是
+     * 收到 AddEntity 包之后自己把它们创建出来的。本 mod 是纯服务端 mod，不涉及任何客户端
+     * 逻辑，所以这里能给的只有服务端侧的身份信息：{@link NameTagDisplay#entityId()} /
+     * {@link NameTagDisplay#uuid()}，以及它对应的 {@link NameTag}。
+     * <p>
+     * 必须在服务端线程调用。会实时求值 {@code isVisible} / {@code priority} /
+     * {@code lineHeight} / {@code textOpacity}。
+     * <p>
+     * 一般用不到这个，除非你知道你在做什么，否则不要调用
+     */
+    @Deprecated
+    public static List<NameTagDisplay> displays(Entity observee, ServerPlayer observer) {
+        return NameTagRegistry.displays(observee, observer);
     }
 
     /**

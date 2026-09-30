@@ -3,7 +3,7 @@
   "id": "nametagapi",
   "version": "${version}",
   "name": "NameTagAPI",
-  "description": "A lightweight API for custom nametags rendered as fake TextDisplay passengers.",
+  "description": "A lightweight server-side API for custom nametags rendered as fake TextDisplay passengers.",
   "authors": [],
   "contact": {},
   "license": "MIT",

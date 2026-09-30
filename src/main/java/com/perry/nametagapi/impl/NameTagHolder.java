@@ -2,6 +2,7 @@ package com.perry.nametagapi.impl;
 
 import com.perry.nametagapi.NameTagConfig;
 import com.perry.nametagapi.api.NameTag;
+import com.perry.nametagapi.api.NameTagDisplay;
 import com.perry.nametagapi.api.SeeThroughStatus;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
@@ -261,19 +262,62 @@ public final class NameTagHolder {
         }
     }
 
-    /** {@code visible} 由调用方（tick / sendInitial）算好，避免重复求值 isVisible / priority。 */
-    private List<Packet<? super ClientGamePacketListener>> buildSync(ServerPlayer player, List<RankedLine> visible) {
-        UUID uuid = player.getUUID();
-        int[] before = this.visible.getOrDefault(uuid, EMPTY);
+    // ------------------------------------------------------------------ 查询
 
+    /**
+     * 该观察者当前能看到的 nametag 假实体，按渲染顺序（<b>自下而上</b>）排列。
+     * <p>
+     * 只在服务端线程调用。与 tick 那一趟相互独立：这里会<b>实时求值</b>
+     * {@code isVisible} / {@code priority} / {@code lineHeight} / {@code textOpacity}
+     * 这些用户代码。
+     * <p>
+     * 和 {@link #visibleIds} 一样，只有该玩家确实在观察这个被观察者、且被观察者仍然有效
+     * （未移除、同维度）时才有结果，否则返回空列表。
+     * <p>
+     * 返回的 id / uuid 只是「服务端已经/即将给这个观察者下发」的身份信息：真正的
+     * {@link net.minecraft.world.entity.Display.TextDisplay} 由客户端收到 AddEntity 包后
+     * 自行创建，服务端世界里从来没有过这个实体（服务端 {@code level.getEntity(id)} 必然
+     * 是 {@code null}）。本 mod 纯服务端，不提供任何客户端侧的查询。
+     */
+    public List<NameTagDisplay> displaysFor(ServerPlayer player) {
+        if (!this.observers.contains(player) || !this.isValid(player)) {
+            return List.of();
+        }
+        List<Wanted> wanted = this.wantedLines(player, this.rankVisibleLines(player));
+        List<NameTagDisplay> displays = new ArrayList<>(wanted.size());
+        for (Wanted want : wanted) {
+            NameTagLine line = want.line();
+            displays.add(new NameTagDisplay(
+                    line.nametag(), line.display().id, line.display().uuid, want.lift()));
+        }
+        return displays;
+    }
+
+    /**
+     * 该观察者可见的行 + 逐行算好的同步数据（抬升量 / 样式 / 背景 / 不透明度）。
+     * <p>
+     * {@code visible} 由调用方传入：tick / sendInitial 已经算过一遍，不在这里重算，
+     * 否则 isVisible / priority 会被每个观察者每 tick 多求值一次。
+     */
+    private List<Wanted> wantedLines(ServerPlayer player, List<RankedLine> visible) {
         // 自下而上累加抬升量：每条 lineHeight 决定它上面那条被顶多高
         List<Wanted> wanted = new ArrayList<>(visible.size());
         double lift = NameTagConfig.VANILLA_NAMETAG_GAP;
         for (RankedLine ranked : visible) {
             NameTagLine line = ranked.line();
-            wanted.add(new Wanted(line, (float) lift, this.flagsFor(line, player), this.backgroundFor(line, player), line.nametag().textOpacity(player)));
+            wanted.add(new Wanted(line, (float) lift, this.flagsFor(line, player),
+                    this.backgroundFor(line, player), line.nametag().textOpacity(player)));
             lift += Math.max(NameTagConfig.MIN_LINE_HEIGHT, line.nametag().lineHeight(player));
         }
+        return wanted;
+    }
+
+    /** {@code visible} 由调用方（tick / sendInitial）算好，避免重复求值 isVisible / priority。 */
+    private List<Packet<? super ClientGamePacketListener>> buildSync(ServerPlayer player, List<RankedLine> visible) {
+        UUID uuid = player.getUUID();
+        int[] before = this.visible.getOrDefault(uuid, EMPTY);
+
+        List<Wanted> wanted = this.wantedLines(player, visible);
 
         int[] after = new int[wanted.size()];
         for (int i = 0; i < wanted.size(); i++) {
