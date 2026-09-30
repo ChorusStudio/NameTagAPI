@@ -4,6 +4,8 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.perry.nametagapi.api.NameTag;
 import com.perry.nametagapi.api.NameTags;
 import com.perry.nametagapi.api.SeeThroughStatus;
+import com.perry.nametagapi.mixin.ClientboundEntityEventPacketAccessor;
+import io.netty.util.internal.shaded.org.jctools.util.UnsafeAccess;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
@@ -11,10 +13,18 @@ import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.ComponentArgument;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientGamePacketListener;
+import net.minecraft.network.protocol.game.ClientboundBundlePacket;
+import net.minecraft.network.protocol.game.ClientboundEntityEventPacket;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityEvent;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
+import java.util.NoSuchElementException;
 
 /** 调试命令，删掉不影响其它文件。 */
 public final class NameTagCommands {
@@ -89,6 +99,26 @@ public final class NameTagCommands {
                                                 Component.literal("[p=-10] 最高"), 0.275D, SeeThroughStatus.ALWAYS, null, (byte) 255, -10));
                                     }
                                     return targets.size();
+                                })))
+                .then(Commands.literal("demo4")
+                        .then(Commands.argument("targets", EntityArgument.entities())
+                                .executes( context -> {
+                                    ServerPlayer player = context.getSource().getPlayerOrException();
+                                    Collection<? extends Entity> targets = EntityArgument.getEntities(context, "targets");
+                                    List<Packet<? super ClientGamePacketListener>> packets = new ArrayList<>();
+                                    for (Entity entity : targets) {
+                                        try {
+                                            int clientEntityId = NameTags.displays(entity, player).getFirst().entityId();
+                                            var packet = (ClientboundEntityEventPacket) UnsafeAccess.UNSAFE.allocateInstance(ClientboundEntityEventPacket.class);
+                                            ((ClientboundEntityEventPacketAccessor) packet).setEntityId(clientEntityId);
+                                            ((ClientboundEntityEventPacketAccessor) packet).setEventId(EntityEvent.PROTECTED_FROM_DEATH);
+                                            packets.add(packet);
+                                        } catch (NoSuchElementException | InstantiationException ignored) {
+
+                                        }
+                                    }
+                                    player.connection.send(new ClientboundBundlePacket(packets));
+                                    return 0;
                                 })))
                 .then(Commands.literal("clear")
                         .then(Commands.argument("targets", EntityArgument.entities())
