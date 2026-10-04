@@ -44,7 +44,7 @@ public final class VirtualTextDisplay {
             int background,
             int textOpacity
     ) {
-        List<SynchedEntityData.DataValue<?>> values = new ArrayList<>(6);
+        List<SynchedEntityData.DataValue<?>> values = new ArrayList<>(7);
         values.add(SynchedEntityData.DataValue.create(TextDisplayAccessor.text(), text));
         values.add(SynchedEntityData.DataValue.create(TextDisplayAccessor.styleFlags(), flags));
         values.add(SynchedEntityData.DataValue.create(TextDisplayAccessor.backgroundColor(), background));

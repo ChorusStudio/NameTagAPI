@@ -13,6 +13,12 @@ import net.minecraft.world.entity.Entity;
  * 如果需要更多内容，则最好implement这个接口来进行自定义
  * <p>
  * 拿到NameTag之后，去{@link NameTags} 处附着在一个实体上即可
+ * <p>
+ * <b>所有回调</b>（{@link #content} / {@link #isVisible} / {@link #priority} / {@link #lineHeight} /
+ * {@link #textOpacity} / {@link #backgroundColor} / {@link #seeThroughStatus} /
+ * {@link #updateIntervalTicks}）都在服务端线程、且常常在遍历该实体的标签集合期间被调用：
+ * 别在里面 attach / detach / clear <b>同一个实体</b>（会 ConcurrentModificationException），
+ * 也别改自身状态。
  */
 public interface NameTag {
     /**

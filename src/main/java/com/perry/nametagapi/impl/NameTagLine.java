@@ -18,7 +18,7 @@ import java.util.UUID;
  * 覆盖 B 的缓存、A 的刷新会触发 B 的重发。
  */
 final class NameTagLine {
-    private final NameTag nametag;
+    private NameTag nametag;
     private final VirtualTextDisplay display;
 
     /** player uuid -> 该玩家的状态（缓存内容 / revision / 刷新间隔 / 已发送状态）。 */
@@ -27,6 +27,18 @@ final class NameTagLine {
     NameTagLine(NameTag nametag, VirtualTextDisplay display) {
         this.nametag = nametag;
         this.display = display;
+    }
+
+    /**
+     * 同一个 identifier 被重新 attach 成<b>另一个实现</b>：换掉内容来源。
+     * <p>
+     * 逐玩家状态（缓存内容 / revision / 刷新间隔 / 已发送状态）全部作废 —— 内容来源都换了，
+     * 旧缓存没有任何复用价值；下一次 tick 会按新实现重算并整份重发（{@code sent == null}）。
+     * 假实体（display id / uuid）保持不变，所以客户端只会收到 SetEntityData。
+     */
+    void replace(NameTag nametag) {
+        this.nametag = nametag;
+        this.states.clear();
     }
 
     NameTag nametag() {
@@ -65,7 +77,8 @@ final class NameTagLine {
         Component next = Objects.requireNonNullElse(
                 this.nametag.content(observee, player), Component.empty());
         state.initialized = true;
-        if (state.component == null || !state.component.equals(next)) {
+        // 先做同一性判断：固定文本每次 content() 都返回同一个实例，能省掉整棵 Component 的深比较
+        if (state.component == null || (state.component != next && !state.component.equals(next))) {
             state.component = next;
             state.revision++;
         }
@@ -109,7 +122,7 @@ final class NameTagLine {
      * <ul>
      *   <li>{@code sent}：客户端手里的同步数据随实体一起没了，下次可见必须整份重发；</li>
      *   <li>{@code component}：不可见期间我们不再刷新内容（见
-     *       {@code NameTagHolder#refreshComponents}），若保留旧值，{@code interval = 0}
+     *       {@code NameTagHolder#buildSync}），若保留旧值，{@code interval = 0}
      *       的行会拿着「进入不可见之前的内容」永远不更新。代价只是再可见时多算一次
      *       {@code content()}。</li>
      * </ul>
@@ -126,6 +139,9 @@ final class NameTagLine {
 
     /**
      * 玩家彻底不再观察这条行（removePairing / 断线）：整份状态一起清掉。
+     * <p>
+     * key 是 UUID：重生/重连后新旧 ServerPlayer 是同一个 UUID，若 removeObserver（旧实例）
+     * 晚于 addObserver（新实例）到达，这里会顺手清掉新会话的状态 —— 无害，下一次 tick 会重算并重发。
      */
     void forget(ServerPlayer player) {
         this.states.remove(player.getUUID());

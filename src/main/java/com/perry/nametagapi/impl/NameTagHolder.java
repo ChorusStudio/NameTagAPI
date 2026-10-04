@@ -7,28 +7,21 @@ import com.perry.nametagapi.api.SeeThroughStatus;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
  * 一个被观察者身上的全部 nametag 状态。
  * <p>
- * 线程模型：除了 {@link #visible}（volatile 快照，供出站包 hook 无锁读取）之外，
- * 其它字段都只在服务端线程读写。
+ * 线程模型：除了 {@link #visible}（并发 map、值是绝不原地修改的数组，供出站包 hook 无锁读取）
+ * 之外，其它字段都只在服务端线程读写。
  */
 public final class NameTagHolder {
     private static final int[] EMPTY = new int[0];
@@ -37,39 +30,46 @@ public final class NameTagHolder {
     private static final int INTERVAL_CACHE_TICKS = 20;
 
     private final Entity observee;
-    private final ServerLevel level;
-    private final List<NameTagLine> lines = new ArrayList<>();
+    private final LinkedHashMap<Identifier, NameTagLine> lines = new LinkedHashMap<>();
+
+    /** display id -> 行：{@link #markLineHidden} 要按 display id 反查，不能每 tick 线性扫。 */
+    private final Map<Integer, NameTagLine> linesByDisplayId = new HashMap<>();
+
     private final Set<ServerPlayer> observers = new LinkedHashSet<>();
 
-    /** player uuid -> 该玩家当前可见的假实体 id（有序）。整体替换，读端无锁。 */
-    private volatile Map<UUID, int[]> visible = Map.of();
+    /**
+     * player uuid -> 该玩家当前可见的假实体 id（有序，整体替换，绝不原地改）。
+     * <p>
+     * 用并发 map 而不是「volatile + 写时复制」：出站包 hook 读它无锁，而写端每个玩家只动自己那一项，
+     * 于是发布是 O(1) —— 更重要的是能做到「先把新值放进去、再发包」（顺序要求见
+     * {@link #removeLine}），写时复制只能整表复制，做不到按玩家先发布。
+     */
+    private final Map<UUID, int[]> visible = new ConcurrentHashMap<>();
 
     /** 观察者集合变动过（或首次），需要重算每行的刷新间隔。 */
     private boolean intervalsDirty = true;
     private int intervalRefreshAt;
 
-    public NameTagHolder(Entity observee, ServerLevel level) {
+    public NameTagHolder(Entity observee) {
         this.observee = observee;
-        this.level = level;
     }
 
     public Entity observee() {
         return this.observee;
     }
 
-    public ServerLevel level() {
-        return this.level;
-    }
-
     public boolean isEmpty() {
         return this.lines.isEmpty();
     }
 
-    public List<NameTag> nametags() {
-        List<NameTag> result = new ArrayList<>(this.lines.size());
-        for (NameTagLine line : this.lines) {
-            result.add(line.nametag());
-        }
+    /**
+     * identifier → nametag 的有序快照（attach 顺序）。
+     * <p>
+     * 返回的是拷贝，遍历时对该实体 attach / detach 都是安全的。
+     */
+    public LinkedHashMap<Identifier, NameTag> nametags() {
+        LinkedHashMap<Identifier, NameTag> result = new LinkedHashMap<>(this.lines.size());
+        this.lines.forEach((id, line) -> result.put(id, line.nametag()));
         return result;
     }
 
@@ -84,47 +84,49 @@ public final class NameTagHolder {
 
     // ------------------------------------------------------------------ 行管理
 
-    void addLine(NameTag nametag) {
-        NameTagLine line = new NameTagLine(nametag, new VirtualTextDisplay(this.level));
-        this.lines.add(line);
+    void addLine(NameTag nametag, Identifier id, ServerLevel level) {
+        NameTagLine existing = this.lines.get(id);
+        if (existing != null) {
+            // 同一个 identifier 重复 attach = 原地替换：假实体（id/uuid）保持不变，只换实现并
+            // 作废逐玩家缓存，下一次 tick 自然把新内容整份重发。传的还是同一个实例则完全无操作
+            // —— 那种「就地改 MutableComponent」的刷新走 NameTags#invalidate。
+            if (existing.nametag() != nametag) {
+                existing.replace(nametag);
+                this.intervalsDirty = true;
+            }
+            return;
+        }
+        // level 用调用方当场给的那个、不缓存：实体跨维度后这里必须拿到新世界
+        NameTagLine line = new NameTagLine(nametag, new VirtualTextDisplay(level));
+        this.lines.put(id, line);
+        this.linesByDisplayId.put(line.display().id, line);
         this.intervalsDirty = true;
         NameTagRegistry.registerFakeId(line.display().id);
     }
 
-    void removeLine(NameTag nametag) {
-        NameTagLine target = null;
-        for (NameTagLine line : this.lines) {
-            if (line.nametag() == nametag) {
-                target = line;
-                break;
-            }
-        }
+    void removeLine(Identifier id) {
+        NameTagLine target = this.lines.remove(id);
         if (target == null) {
             return;
         }
-        this.lines.remove(target);
+        this.linesByDisplayId.remove(target.display().id);
         NameTagRegistry.unregisterFakeId(target.display().id);
 
-        // 攒好新快照、循环外一次性发布：setVisible 是全量 map 复制，逐个玩家调是 O(n²)
-        Map<UUID, int[]> next = new HashMap<>(this.visible);
-        boolean changed = false;
         for (ServerPlayer player : this.observers) {
             int[] current = this.visibleIds(player);
             if (!contains(current, target.display().id)) {
                 continue;
             }
             int[] remaining = removeId(current, target.display().id);
-            // 先把乘客表修正成「不再包含这个假实体」，再删实体：客户端不会出现
-            // 「乘客数组里引用一个已删除 id」的中间态。
+            // 顺序不能反：connection.send 会同步走出站 hook，而 hook 会读 visibleIds。
+            // 先把「这个玩家已经看不到它了」发布出去，hook 才会把我们自己的 SetPassengers
+            // 认成幂等；否则它会把这个刚摘掉的假实体当成「本玩家可见的」又追加回乘客表。
+            // 发布之后：修正乘客表 → 删实体，客户端不会出现「乘客数组指向已删除 id」的中间态。
+            this.visible.put(player.getUUID(), remaining);
             player.connection.send(NameTagPackets.setPassengers(
                     this.observee.getId(), this.passengerIds(remaining)));
-            next.put(player.getUUID(), remaining);
-            changed = true;
             target.forget(player);
             player.connection.send(NameTagPackets.removeEntities(target.display().id));
-        }
-        if (changed) {
-            this.visible = Collections.unmodifiableMap(next);
         }
     }
 
@@ -141,14 +143,14 @@ public final class NameTagHolder {
             return;
         }
         this.intervalsDirty = true;
-        int[] ids = this.visibleIds(player);
-        if (ids.length > 0) {
+        // 先撤销可见性、再发包：和 removeLine 同样的顺序要求
+        int[] ids = this.visible.remove(player.getUUID());
+        if (ids != null && ids.length > 0) {
             player.connection.send(NameTagPackets.removeEntities(ids));
         }
-        for (NameTagLine line : this.lines) {
+        for (NameTagLine line : this.lines.values()) {
             line.forget(player);
         }
-        this.setVisible(player, EMPTY);
     }
 
     /**
@@ -166,15 +168,11 @@ public final class NameTagHolder {
     void forgetPlayer(ServerPlayer player) {
         this.observers.remove(player);
         this.intervalsDirty = true;
-        for (NameTagLine line : this.lines) {
+        for (NameTagLine line : this.lines.values()) {
             line.forget(player);
         }
-        UUID uuid = player.getUUID();
-        if (this.visible.containsKey(uuid)) {
-            Map<UUID, int[]> next = new HashMap<>(this.visible);
-            next.remove(uuid);
-            this.visible = Collections.unmodifiableMap(next);
-        }
+        // 连接已经没了，不需要发包：直接把这条可见性记录摘掉
+        this.visible.remove(player.getUUID());
     }
 
     /** 自愈：把这条被观察者的乘客表重新下发一次。 */
@@ -234,9 +232,11 @@ public final class NameTagHolder {
      */
     private List<RankedLine> rankVisibleLines(ServerPlayer player) {
         List<RankedLine> visible = new ArrayList<>(this.lines.size());
-        for (NameTagLine line : this.lines) {
+        for (Map.Entry<Identifier, NameTagLine> entry : this.lines.entrySet()) {
+            NameTagLine line = entry.getValue();
             if (this.canSee(line, player)) {
-                visible.add(new RankedLine(line, line.nametag().priority(player)));
+                // identifier 一起带上：displaysFor 要用它当 map 的 key
+                visible.add(new RankedLine(entry.getKey(), line, line.nametag().priority(player)));
             }
         }
         // List.sort 是稳定排序，所以同优先级保持 attach 顺序（先挂的在下面）
@@ -265,29 +265,30 @@ public final class NameTagHolder {
     // ------------------------------------------------------------------ 查询
 
     /**
-     * 该观察者当前能看到的 nametag 假实体，按渲染顺序（<b>自下而上</b>）排列。
+     * 该观察者当前能看到的 nametag 假实体：identifier → {@link NameTagDisplay}，
+     * 按渲染顺序（<b>自下而上</b>，也就是 map 的遍历顺序）排列。
      * <p>
      * 只在服务端线程调用。与 tick 那一趟相互独立：这里会<b>实时求值</b>
      * {@code isVisible} / {@code priority} / {@code lineHeight} / {@code textOpacity}
      * 这些用户代码。
      * <p>
      * 和 {@link #visibleIds} 一样，只有该玩家确实在观察这个被观察者、且被观察者仍然有效
-     * （未移除、同维度）时才有结果，否则返回空列表。
+     * （未移除、同维度）时才有结果，否则返回空 map。
      * <p>
-     * 返回的 id / uuid 只是「服务端已经/即将给这个观察者下发」的身份信息：真正的
-     * {@link net.minecraft.world.entity.Display.TextDisplay} 由客户端收到 AddEntity 包后
-     * 自行创建，服务端世界里从来没有过这个实体（服务端 {@code level.getEntity(id)} 必然
-     * 是 {@code null}）。本 mod 纯服务端，不提供任何客户端侧的查询。
+     * value 里的 {@code entityId} / {@code uuid} 只是「服务端已经/即将给这个观察者下发」的假实体
+     * 身份信息：真正的 {@link net.minecraft.world.entity.Display.TextDisplay} 由客户端收到
+     * AddEntity 包后自行创建，服务端世界里从来没有过这个实体（服务端 {@code level.getEntity(id)}
+     * 必然是 {@code null}）。本 mod 纯服务端，不提供任何客户端侧的查询。
      */
-    public List<NameTagDisplay> displaysFor(ServerPlayer player) {
+    public LinkedHashMap<Identifier, NameTagDisplay> displaysFor(ServerPlayer player) {
         if (!this.observers.contains(player) || !this.isValid(player)) {
-            return List.of();
+            return LinkedHashMap.newLinkedHashMap(0);
         }
         List<Wanted> wanted = this.wantedLines(player, this.rankVisibleLines(player));
-        List<NameTagDisplay> displays = new ArrayList<>(wanted.size());
+        LinkedHashMap<Identifier, NameTagDisplay> displays = LinkedHashMap.newLinkedHashMap(wanted.size());
         for (Wanted want : wanted) {
             NameTagLine line = want.line();
-            displays.add(new NameTagDisplay(
+            displays.put(want.id(), new NameTagDisplay(
                     line.nametag(), line.display().id, line.display().uuid, want.lift()));
         }
         return displays;
@@ -305,7 +306,7 @@ public final class NameTagHolder {
         double lift = NameTagConfig.VANILLA_NAMETAG_GAP;
         for (RankedLine ranked : visible) {
             NameTagLine line = ranked.line();
-            wanted.add(new Wanted(line, (float) lift, this.flagsFor(line, player),
+            wanted.add(new Wanted(ranked.id(), line, (float) lift, this.flagsFor(line, player),
                     this.backgroundFor(line, player), line.nametag().textOpacity(player)));
             lift += Math.max(NameTagConfig.MIN_LINE_HEIGHT, line.nametag().lineHeight(player));
         }
@@ -362,7 +363,7 @@ public final class NameTagHolder {
                 }
             }
             packets.add(NameTagPackets.setPassengers(this.observee.getId(), this.passengerIds(after)));
-            this.setVisible(player, after);
+            this.visible.put(uuid, after);
         }
 
         return packets;
@@ -407,57 +408,57 @@ public final class NameTagHolder {
         return !this.observee.isRemoved() && this.observee.level() == player.level();
     }
 
-    private void setVisible(ServerPlayer player, int[] ids) {
-        Map<UUID, int[]> next = new HashMap<>(this.visible);
-        next.put(player.getUUID(), ids);
-        this.visible = Collections.unmodifiableMap(next);
-    }
-
     /** 找出 display id 对应的行，标记它对这个玩家已隐藏（丢内容缓存 + 丢已发送状态）。 */
     private void markLineHidden(int displayId, ServerPlayer player) {
-        for (NameTagLine line : this.lines) {
-            if (line.display().id == displayId) {
-                line.markHidden(player);
-                return;
-            }
+        NameTagLine line = this.linesByDisplayId.get(displayId);
+        if (line != null) {
+            line.markHidden(player);
         }
     }
 
     /** 强制重发所有行的同步数据（见 NameTags#invalidate）。 */
     void invalidateAll() {
-        for (NameTagLine line : this.lines) {
+        for (NameTagLine line : this.lines.values()) {
             line.invalidate();
         }
     }
 
-    /** 被观察者要消失时调用：把所有假实体撤掉。 */
+    /** 被观察者要消失、或 {@code NameTags#clear} 时调用：把所有假实体撤掉。 */
     void evictAll() {
         if (this.lines.isEmpty()) {
             return;
         }
         int[] ids = new int[this.lines.size()];
-        for (int i = 0; i < ids.length; i++) {
-            ids[i] = this.lines.get(i).display().id;
+        int index = 0;
+        for (NameTagLine line : this.lines.values()) {
+            ids[index++] = line.display().id;
         }
+        // 只留真实乘客。顺序：先把「谁都看不到假实体了」发布出去，再发 SetPassengers 把假实体
+        // 从乘客表里摘掉，最后才删实体。反过来的话客户端会留着「指向已删除 id」的乘客项，而
+        // holder 之后就被摘掉了，出站 hook 再也修不了它（见 PassengerMerger#merge 的兜底）。
+        int[] real = this.passengerIds(EMPTY);
+        this.visible.clear();
         for (ServerPlayer player : this.observers) {
+            player.connection.send(NameTagPackets.setPassengers(this.observee.getId(), real));
             player.connection.send(NameTagPackets.removeEntities(ids));
         }
-        this.visible = Map.of();
     }
 
     /** 释放假实体 id 并清空行。 */
     void releaseFakeIds() {
-        for (NameTagLine line : this.lines) {
+        for (NameTagLine line : this.lines.values()) {
             NameTagRegistry.unregisterFakeId(line.display().id);
         }
         this.lines.clear();
+        this.linesByDisplayId.clear();
     }
 
-    private record Wanted(NameTagLine line, float lift, byte flags, int background, byte textOpacity) {
+    private record Wanted(Identifier id, NameTagLine line, float lift, byte flags, int background,
+                          byte textOpacity) {
     }
 
     /** 排序用的临时载体：把 priority 物化，避免比较器反复调用用户代码。 */
-    private record RankedLine(NameTagLine line, int priority) {
+    private record RankedLine(Identifier id, NameTagLine line, int priority) {
     }
 
     private static boolean contains(int[] ids, int id) {

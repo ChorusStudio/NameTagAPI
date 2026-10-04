@@ -2,10 +2,11 @@ package com.perry.nametagapi.api;
 
 import com.perry.nametagapi.impl.NameTagHolder;
 import com.perry.nametagapi.impl.NameTagRegistry;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 
-import java.util.List;
+import java.util.LinkedHashMap;
 
 /**
  * 唯一入口。
@@ -20,18 +21,24 @@ public final class NameTags {
     /**
      * 给实体挂一条 nametag。不会立刻发包，由 tick 统一差分下发。
      * <p>
+     * {@code id} 是这条 nametag 在<b>该实体</b>身上的标识：{@link #detach} 靠它摘除。
+     * 同一个实体上重复 attach 同一个 id 表示<b>原地替换</b>：假实体（entity id / uuid）不变，
+     * 只换实现并重算内容 —— 传的还是同一个实例则完全无操作，那种「就地改 MutableComponent」
+     * 的刷新请用 {@link #invalidate}。建议以自己的 mod id 起头：
+     * {@code Identifier.fromNamespaceAndPath(MyMod.MOD_ID, "mana_bar")}。
+     * <p>
      * 生命周期：实体被移除<b>或所在区块被卸载</b>时标签会被清掉（两者都走
      * {@code Entity#setRemoved}），对已处于该状态的实体调用本方法会被忽略并打一条 debug
-     * 日志；玩家重连不保留（新会话、新实体）；玩家重生会自动搬过去（entity id 会变）；
-     * 跨维度不需要重挂（实例和 id 都不变）。
+     * 日志；玩家重连不保留（新会话、新实体）；玩家重生会自动搬过去（entity id 会变，
+     * identifier 不变）；跨维度不需要重挂（实例和 id 都不变）。
      */
-    public static void attach(Entity observee, NameTag nametag) {
-        NameTagRegistry.attach(observee, nametag);
+    public static void attach(Entity observee, NameTag nametag, Identifier id) {
+        NameTagRegistry.attach(observee, nametag, id);
     }
 
-    /** 摘掉指定的一条。 */
-    public static void detach(Entity observee, NameTag nametag) {
-        NameTagRegistry.detach(observee, nametag);
+    /** 摘掉该实体上 identifier 对应的那一条；该 id 没挂着时什么都不做。 */
+    public static void detach(Entity observee, Identifier id) {
+        NameTagRegistry.detach(observee, id);
     }
 
     /** 摘掉全部。 */
@@ -49,15 +56,22 @@ public final class NameTags {
         NameTagRegistry.invalidate(observee);
     }
 
-    /** 当前挂着的 nametag（快照）。 */
-    public static List<NameTag> of(Entity observee) {
+    /**
+     * 当前挂着的 nametag 快照：identifier → NameTag，按 attach 顺序。
+     * <p>
+     * 返回的是拷贝，遍历时对该实体 attach / detach 都是安全的。
+     * <p>
+     * 必须在服务端线程调用。
+     */
+    public static LinkedHashMap<Identifier, NameTag> of(Entity observee) {
         return NameTagRegistry.of(observee);
     }
 
     /**
-     * 某个观察者当前能看到的 nametag 假实体，按渲染顺序（<b>自下而上</b>）排列。
+     * 某个观察者当前能看到的 nametag 假实体：identifier → {@link NameTagDisplay}，
+     * 按渲染顺序（<b>自下而上</b>，也就是 map 的遍历顺序）排列。
      * <p>
-     * 被观察者身上没挂 nametag、或该玩家根本没在观察它时返回空列表。
+     * 被观察者身上没挂 nametag、或该玩家根本没在观察它时返回空 map。
      * <p>
      * <b>服务端世界里并不存在这些实体</b>：它们只是「挂在被观察者身上的乘客」，客户端是
      * 收到 AddEntity 包之后自己把它们创建出来的。本 mod 是纯服务端 mod，不涉及任何客户端
@@ -70,7 +84,7 @@ public final class NameTags {
      * 一般用不到这个，除非你知道你在做什么，否则不要调用
      */
     @Deprecated
-    public static List<NameTagDisplay> displays(Entity observee, ServerPlayer observer) {
+    public static LinkedHashMap<Identifier, NameTagDisplay> displays(Entity observee, ServerPlayer observer) {
         return NameTagRegistry.displays(observee, observer);
     }
 

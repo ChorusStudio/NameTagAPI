@@ -3,7 +3,8 @@ package com.perry.nametagapi.api;
 import java.util.UUID;
 
 /**
- * 某个观察者眼里的一个 nametag「假实体」快照（见 {@link NameTags#displays}）。
+ * 某个观察者眼里的一个 nametag「假实体」快照，是 {@link NameTags#displays} 返回的 map 里的
+ * value（key 是这条 nametag 的 identifier）。
  * <p>
  * <b>服务端世界里并不存在这个实体</b>：我们只保留它的 id / uuid，真正用于渲染的
  * {@link net.minecraft.world.entity.Display.TextDisplay} 是客户端在收到 AddEntity 包之后

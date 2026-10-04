@@ -8,6 +8,7 @@ import com.perry.nametagapi.mixin.ChunkMapAccessor;
 import com.perry.nametagapi.mixin.TrackedEntityAccessor;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientGamePacketListener;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
@@ -15,11 +16,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerPlayerConnection;
 import net.minecraft.world.entity.Entity;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
@@ -47,10 +44,14 @@ public final class NameTagRegistry {
      * 必须在服务端线程调用。如果实体已经处于「已移除」状态（被 discard，<b>或者所在区块
      * 已被卸载</b> —— 两者都会走 {@code Entity#setRemoved}），这里会直接忽略并打一条
      * debug 日志，而不是抛异常：调用方此时往往还持有实体引用、以为它还活着。
+     * <p>
+     * {@code id} 是这条 nametag 在该实体上的标识：同一个 id 再次 attach 视为「同一条」，
+     * 会在原来的行上原地替换实现（假实体 id/uuid 保持不变）。
      */
-    public static void attach(Entity observee, NameTag nametag) {
+    public static void attach(Entity observee, NameTag nametag, Identifier id) {
         Objects.requireNonNull(observee, "observee");
         Objects.requireNonNull(nametag, "nametag");
+        Objects.requireNonNull(id, "id");
         ServerLevel level = serverLevel(observee);
         checkThread(level);
         if (observee.isRemoved()) {
@@ -61,20 +62,21 @@ public final class NameTagRegistry {
             return;
         }
         NameTagHolder holder = HOLDERS.computeIfAbsent(
-                observee.getId(), _ -> new NameTagHolder(observee, level));
-        holder.addLine(nametag);
+                observee.getId(), _ -> new NameTagHolder(observee));
+        holder.addLine(nametag, id, level);
         // 标签往往挂得比「玩家开始追踪这个实体」晚，这里用原版自己的追踪表补一次。
         holder.syncObserversFrom(trackedPlayers(observee));
     }
 
-    public static void detach(Entity observee, NameTag nametag) {
+    public static void detach(Entity observee, Identifier id) {
         Objects.requireNonNull(observee, "observee");
+        Objects.requireNonNull(id, "id");
         checkServerThread(observee);
         NameTagHolder holder = HOLDERS.get(observee.getId());
         if (holder == null) {
             return;
         }
-        holder.removeLine(nametag);
+        holder.removeLine(id);
         if (holder.isEmpty()) {
             HOLDERS.remove(observee.getId(), holder);
         }
@@ -105,7 +107,7 @@ public final class NameTagRegistry {
     /**
      * 玩家重生时的交接：vanilla 会 {@code new ServerPlayer(...)}，entity id 变了，
      * 旧实例上的 holder 会被当作已移除清掉，标签就凭空消失了。这里把旧实例的
-     * NameTag 原样搬到新实例上。
+     * NameTag 连同它的 identifier 原样搬到新实例上。
      * <p>
      * 由 {@code ServerPlayerEvents.AFTER_RESPAWN} 触发。只处理「重生」，不处理重连
      * —— 重连开启的是新会话，标签不跨会话保留。
@@ -116,14 +118,18 @@ public final class NameTagRegistry {
             return;
         }
         // nametags() 返回的是快照，遍历时往另一个 player 上挂是安全的
-        for (NameTag nametag : previous.nametags()) {
-            attach(newPlayer, nametag);
+        for (Map.Entry<Identifier, NameTag> entry : previous.nametags().entrySet()) {
+            attach(newPlayer, entry.getValue(), entry.getKey());
         }
     }
 
-    public static List<NameTag> of(Entity observee) {
+    /** 当前挂着的 nametag：identifier → NameTag，按 attach 顺序（快照）。 */
+    public static LinkedHashMap<Identifier, NameTag> of(Entity observee) {
+        Objects.requireNonNull(observee, "observee");
+        // 和 displays 一样：读的也只在服务端线程维护的内部结构
+        checkServerThread(observee);
         NameTagHolder holder = HOLDERS.get(observee.getId());
-        return holder == null ? List.of() : holder.nametags();
+        return holder == null ? LinkedHashMap.newLinkedHashMap(0) : holder.nametags();
     }
 
     public static NameTagHolder ofHolder(Entity observee) {
@@ -131,17 +137,18 @@ public final class NameTagRegistry {
     }
 
     /**
-     * 某个观察者当前看到的 nametag 假实体，按渲染顺序（自下而上）排列。
+     * 某个观察者当前看到的 nametag 假实体：identifier → {@link NameTagDisplay}，
+     * 按渲染顺序（自下而上，也就是 map 的遍历顺序）排列。
      * <p>
      * 详见 {@link NameTagHolder#displaysFor}：必须在服务端线程调用，且会实时求值
      * isVisible / priority / lineHeight 等用户代码。
      */
-    public static List<NameTagDisplay> displays(Entity observee, ServerPlayer observer) {
+    public static LinkedHashMap<Identifier, NameTagDisplay> displays(Entity observee, ServerPlayer observer) {
         Objects.requireNonNull(observee, "observee");
         Objects.requireNonNull(observer, "observer");
         checkServerThread(observee);
         NameTagHolder holder = HOLDERS.get(observee.getId());
-        return holder == null ? List.of() : holder.displaysFor(observer);
+        return holder == null ? LinkedHashMap.newLinkedHashMap(0) : holder.displaysFor(observer);
     }
 
     // ------------------------------------------------------------------ 供 mixin 调用
