@@ -1,21 +1,25 @@
-# JitPack 构建配置 —— 让 Gradle 自己跑在 JDK 25 上。
+# JitPack 构建配置。
 #
-# 背景：fabric-loom 1.18 / MC 26.3 的插件 classpath 要求 JVM >= 25，而 JitPack 默认用 Java 17
-# 启动 Gradle。失败点在「解析 buildscript classpath」，比 build.gradle 里的 java {} toolchain
-# 更早，所以必须换掉运行 Gradle 的那个 JVM，toolchain 配置救不了。
+# 问题：fabric-loom 1.18 / MC 26.3 的插件 classpath 要求 JVM >= 25，而 JitPack 默认用 Java 17
+# 启动 Gradle -> "Dependency requires at least JVM runtime version 25. This build uses a Java 17 JVM."
+# 失败发生在解析 buildscript classpath 阶段，比 build.gradle 里的 java {} toolchain 更早，
+# 所以必须换掉「运行 Gradle 的那个 JVM」。
 #
-# 两个必须避开的坑：
-#   1. JitPack 每一步都是一条独立 shell 命令：`sdk use` / `export` 都不会传导到后续步骤
-#      （官方文档也写明 sdk use 只对当前 shell 生效）。旧配置就是这么静默失败的：
-#      ./gradlew -v 仍然打印 Launcher JVM 17。
-#   2. 版本标识符必须写全（Temurin 25 是 25.0.4-tem；`25-tem`、`25-open` 都不存在），
-#      而且 sdk install 失败不会中断构建 —— 于是没人发现 JVM 根本没换。
+# 为什么必须用 jdk: 而不是只在 before_install/install 里设 JAVA_HOME：
+# JitCI/JitPack 会先跑 `./gradlew -v` 和 `./gradlew listDeps -I ../deps.gradle`，这两步都在
+# install 之前，且每一步是独立 shell（export / sdk use 都不会传导）。只有 jdk: 会在整个
+# 流程开始前就把默认 JDK 换掉，那两步才会用上 Java 25。
 #
-# 所以：先装好 25，再在同一条命令里用 `sdk home` 取绝对路径设成 JAVA_HOME 交给 Gradle
-# （gradlew 脚本优先读 JAVA_HOME）。`</dev/null` 是为了让 sdk 在无 TTY 的 CI 里不卡在
-# 交互式提问上。
+# 写法参考 Plan（同为 Gradle 项目、同样用 JDK 25 构建成功）：
+# https://github.com/plan-player-analytics/Plan/blob/master/jitpack.yml
+jdk:
+  - openjdk25
+
 before_install:
-  - source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install java 25.0.4-tem < /dev/null
+  # 兜底：万一镜像里没有现成的 openjdk25，就用 SDKMAN 装一个。
+  # 注意版本标识符要写全（Temurin 25 是 25.0.4-tem；`25-open` 在 SDKMAN 上并不存在，
+  # sdk install 失败又不会中断构建，所以这里失败不影响 jdk: 已经生效的 25）。
+  - source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install java 25.0.4-tem < /dev/null || true
 
 install:
-  - source "$HOME/.sdkman/bin/sdkman-init.sh"; export JAVA_HOME="$(sdk home java 25.0.4-tem)"; echo "JAVA_HOME=$JAVA_HOME"; test -x "$JAVA_HOME/bin/java" || { echo '!!! JDK 25 未就绪，构建中止'; exit 1; }; "$JAVA_HOME/bin/java" -version; ./gradlew clean build publishToMavenLocal --no-daemon --stacktrace
+  - ./gradlew clean build publishToMavenLocal --stacktrace
