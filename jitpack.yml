@@ -5,21 +5,15 @@
 # 失败发生在解析 buildscript classpath 阶段，比 build.gradle 里的 java {} toolchain 更早，
 # 所以必须换掉「运行 Gradle 的那个 JVM」。
 #
-# 为什么必须用 jdk: 而不是只在 before_install/install 里设 JAVA_HOME：
-# JitCI/JitPack 会先跑 `./gradlew -v` 和 `./gradlew listDeps -I ../deps.gradle`，这两步都在
-# install 之前，且每一步是独立 shell（export / sdk use 都不会传导）。只有 jdk: 会在整个
-# 流程开始前就把默认 JDK 换掉，那两步才会用上 Java 25。
+# 为什么必须用 jdk:：JitPack 会先跑 `./gradlew -v`、`./gradlew listDeps -I ../deps.gradle`
+# 等步骤，且每一步是独立 shell（export / sdk use 都不会传导到下一步）。只有 jdk: 会在整个
+# 流程开始之前就把默认 JDK 装好并切过去。
 #
-# 写法参考 Plan（同为 Gradle 项目、同样用 JDK 25 构建成功）：
-# https://github.com/plan-player-analytics/Plan/blob/master/jitpack.yml
+# 不要再往 before_install 里塞 SDKMAN 安装 JDK 的命令：jdk: 已经把 25 装好并设为默认，
+# 中途再装一个别的 25.x 并把 default 改掉，会让随后启动 wrapper 的 JVM 处于不一致状态
+# （实测报 "An unexpected error occurred while trying to open file .../gradle-wrapper.jar"）。
 jdk:
   - openjdk25
-
-before_install:
-  # 兜底：万一镜像里没有现成的 openjdk25，就用 SDKMAN 装一个。
-  # 注意版本标识符要写全（Temurin 25 是 25.0.4-tem；`25-open` 在 SDKMAN 上并不存在，
-  # sdk install 失败又不会中断构建，所以这里失败不影响 jdk: 已经生效的 25）。
-  - source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install java 25.0.4-tem < /dev/null || true
 
 install:
   - ./gradlew clean build publishToMavenLocal --stacktrace
