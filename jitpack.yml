@@ -1,19 +1,4 @@
-# JitPack 构建配置。
-#
-# 问题：fabric-loom 1.18 / MC 26.3 的插件 classpath 要求 JVM >= 25，而 JitPack 默认用 Java 17
-# 启动 Gradle -> "Dependency requires at least JVM runtime version 25. This build uses a Java 17 JVM."
-# 失败发生在解析 buildscript classpath 阶段，比 build.gradle 里的 java {} toolchain 更早，
-# 所以必须换掉「运行 Gradle 的那个 JVM」。
-#
-# 为什么必须用 jdk:：JitPack 会先跑 `./gradlew -v`、`./gradlew listDeps -I ../deps.gradle`
-# 等步骤，且每一步是独立 shell（export / sdk use 都不会传导到下一步）。只有 jdk: 会在整个
-# 流程开始之前就把默认 JDK 装好并切过去。
-#
-# 不要再往 before_install 里塞 SDKMAN 安装 JDK 的命令：jdk: 已经把 25 装好并设为默认，
-# 中途再装一个别的 25.x 并把 default 改掉，会让随后启动 wrapper 的 JVM 处于不一致状态
-# （实测报 "An unexpected error occurred while trying to open file .../gradle-wrapper.jar"）。
-jdk:
-  - openjdk25
-
-install:
-  - ./gradlew clean build publishToMavenLocal --stacktrace
+before_install:
+  - sdk update
+  - sdk install java 25-open
+  - sdk use java 25-open
