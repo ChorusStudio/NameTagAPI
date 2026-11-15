@@ -2,7 +2,7 @@ package com.perry.nametagapi.mixin;
 
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.world.entity.Display;
-import org.joml.Vector3fc;
+import org.joml.Vector3f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
@@ -19,7 +19,7 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 @Mixin(Display.class)
 public interface DisplayAccessor {
     @Accessor("DATA_TRANSLATION_ID")
-    static EntityDataAccessor<Vector3fc> translation() {
+    static EntityDataAccessor<Vector3f> translation() {
         throw new AssertionError();
     }
 

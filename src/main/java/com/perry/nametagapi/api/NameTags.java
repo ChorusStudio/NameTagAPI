@@ -29,7 +29,7 @@ public final class NameTags {
      * <p>
      * 生命周期：实体被移除<b>或所在区块被卸载</b>时标签会被清掉（两者都走
      * {@code Entity#setRemoved}），对已处于该状态的实体调用本方法会被忽略并打一条 debug
-     * 日志；玩家重连不保留（新会话、新实体）；玩家重生会自动搬过去（entity id 会变，
+     * 日志；玩家重连不保留（新会话、新实体）；玩家重生会自动搬过去（假实体会重建，
      * identifier 不变）；跨维度不需要重挂（实例和 id 都不变）。
      */
     public static void attach(Entity observee, NameTag nametag, Identifier id) {

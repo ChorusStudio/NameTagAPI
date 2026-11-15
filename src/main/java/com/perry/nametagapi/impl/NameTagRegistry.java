@@ -62,7 +62,7 @@ public final class NameTagRegistry {
             return;
         }
         NameTagHolder holder = HOLDERS.computeIfAbsent(
-                observee.getId(), _ -> new NameTagHolder(observee));
+                observee.getId(), entityId -> new NameTagHolder(observee));
         holder.addLine(nametag, id, level);
         // 标签往往挂得比「玩家开始追踪这个实体」晚，这里用原版自己的追踪表补一次。
         holder.syncObserversFrom(trackedPlayers(observee));
@@ -105,9 +105,10 @@ public final class NameTagRegistry {
     }
 
     /**
-     * 玩家重生时的交接：vanilla 会 {@code new ServerPlayer(...)}，entity id 变了，
-     * 旧实例上的 holder 会被当作已移除清掉，标签就凭空消失了。这里把旧实例的
-     * NameTag 连同它的 identifier 原样搬到新实例上。
+     * 玩家重生时的交接：vanilla 会 {@code new ServerPlayer(...)}，但 1.21.11 会沿用
+     * 旧 entity id。必须先清理旧 holder，否则 attach 会复用仍绑定旧实例的 holder，
+     * 下一次 tick 又会因旧实例已移除而清掉标签。
+     * 这里把 NameTag 连同它的 identifier 原样搬到新实例上。
      * <p>
      * 由 {@code ServerPlayerEvents.AFTER_RESPAWN} 触发。只处理「重生」，不处理重连
      * —— 重连开启的是新会话，标签不跨会话保留。
@@ -117,8 +118,11 @@ public final class NameTagRegistry {
         if (previous == null || previous.isEmpty()) {
             return;
         }
-        // nametags() 返回的是快照，遍历时往另一个 player 上挂是安全的
-        for (Map.Entry<Identifier, NameTag> entry : previous.nametags().entrySet()) {
+        LinkedHashMap<Identifier, NameTag> nametags = previous.nametags();
+        previous.evictAll();
+        previous.releaseFakeIds();
+        HOLDERS.remove(oldPlayer.getId(), previous);
+        for (Map.Entry<Identifier, NameTag> entry : nametags.entrySet()) {
             attach(newPlayer, entry.getValue(), entry.getKey());
         }
     }

@@ -19,7 +19,7 @@ public final class NameTagAPI implements ModInitializer {
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> NameTagRegistry.clearAll());
         ServerPlayConnectionEvents.DISCONNECT.register(
                 (handler, server) -> NameTagRegistry.onDisconnect(handler.getPlayer()));
-        // 重生会换成新的 ServerPlayer 实例（新 entity id），把标签搬过去
+        // 重生会换成新的 ServerPlayer 实例，把标签搬过去
         ServerPlayerEvents.AFTER_RESPAWN.register(
                 (oldPlayer, newPlayer, alive) -> NameTagRegistry.carryOver(oldPlayer, newPlayer));
         NameTagCommands.register();

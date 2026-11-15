@@ -87,6 +87,6 @@ public interface NameTag {
 
     /** 固定文本的便捷实现（对所有观察者显示同一份内容）。 */
     static NameTag simple(Component text) {
-        return (_, _) -> text;
+        return (observee, observer) -> text;
     }
 }

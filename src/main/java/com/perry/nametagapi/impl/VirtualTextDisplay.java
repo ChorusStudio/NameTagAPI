@@ -8,7 +8,7 @@ import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Display;
-import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.EntityType;
 import org.joml.Vector3f;
 
 import java.util.ArrayList;
@@ -28,7 +28,7 @@ public final class VirtualTextDisplay {
     public final UUID uuid;
 
     public VirtualTextDisplay(ServerLevel level) {
-        Display.TextDisplay entity = new Display.TextDisplay(EntityTypes.TEXT_DISPLAY, level);
+        Display.TextDisplay entity = new Display.TextDisplay(EntityType.TEXT_DISPLAY, level);
         this.id = entity.getId();
         this.uuid = entity.getUUID();
     }

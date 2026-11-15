@@ -1,5 +1,9 @@
 jdk:
-  - openjdk25
+  - openjdk17
 before_install:
-  - sdk install java 25-open
-  - sdk use java 25-open
+  - sdk update
+  - sdk install java 21-open
+  - sdk use java 21-open
+install:
+  - java -version
+  - ./gradlew build publishToMavenLocal -x test

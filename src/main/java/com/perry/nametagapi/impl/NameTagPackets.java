@@ -9,7 +9,7 @@ import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
 import net.minecraft.network.protocol.game.ClientboundBundlePacket;
 import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.network.protocol.game.ClientboundSetPassengersPacket;
-import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
@@ -25,7 +25,7 @@ public final class NameTagPackets {
                 id, uuid,
                 at.x, at.y + NameTagConfig.SPAWN_Y_OFFSET, at.z,
                 0.0F, 0.0F,
-                EntityTypes.TEXT_DISPLAY,
+                EntityType.TEXT_DISPLAY,
                 0,
                 Vec3.ZERO,
                 0.0D
