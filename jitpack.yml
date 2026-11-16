@@ -1,9 +1,17 @@
+# Bootstrap SDKMAN with the image's Java 17; Gradle uses Java 21 below.
 jdk:
   - openjdk17
 before_install:
-  - sdk update
-  - sdk install java 21-open
-  - sdk use java 21-open
+  - git config --global --add safe.directory /build
+  - git config --global --add safe.directory "$(pwd -P)"
+  - |-
+    if [ ! -x "${SDKMAN_DIR:-$HOME/.sdkman}/candidates/java/21.0.13.0+9-tem/bin/java" ]; then
+      sdk install java 21.0.13.0+9-tem || exit 1
+    fi
 install:
-  - java -version
-  - ./gradlew build publishToMavenLocal -x test
+  - |-
+    set -e
+    export JAVA_HOME="${SDKMAN_DIR:-$HOME/.sdkman}/candidates/java/21.0.13.0+9-tem"
+    export PATH="$JAVA_HOME/bin:$PATH"
+    "$JAVA_HOME/bin/java" -version
+    ./gradlew --no-daemon build publishToMavenLocal -x test
